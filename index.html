@@ -4,7 +4,6 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Fault Finder">
-<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="icon" href="icon-192.png">
@@ -118,7 +117,7 @@ footer{font-size:.8rem;color:var(--muted);max-width:65ch}
   <div class="wrap">
     <form class="addform" id="addform" hidden novalidate>
       <h2>Add a fault code</h2>
-      <p>Everyone using Fault Finder sees new codes straight away. Copy the code exactly as the display or EST shows it.</p>
+      <p>Every mechanic sees new codes within about 5 minutes. No signal? It saves on your phone and sends later. Copy the code exactly as the display or EST shows it.</p>
       <div class="grid2">
         <div class="fld"><label for="f-book">Machine</label><select id="f-book"></select></div>
         <div class="fld"><label for="f-model">Model (optional)</label><input id="f-model" maxlength="60" placeholder="e.g. Magnum 340, Patriot 4430"></div>
@@ -129,6 +128,7 @@ footer{font-size:.8rem;color:var(--muted);max-width:65ch}
       </div>
       <div class="fld"><label for="f-desc">What the code means</label><input id="f-desc" maxlength="300" placeholder="Description from the display, EST or manual"></div>
       <div class="fld"><label for="f-fix">What fixed it (optional)</label><textarea id="f-fix" maxlength="600" placeholder="e.g. Chafed wire at the rear hitch connector, repaired and recalibrated"></textarea></div>
+      <div class="fld"><label for="f-by">Your name</label><input id="f-by" maxlength="60" autocomplete="name" placeholder="So others know who to ask"></div>
       <div class="formerr" id="formerr" hidden></div>
       <div class="actions">
         <button class="btn" id="saveBtn" type="submit">Save code</button>
@@ -137,7 +137,7 @@ footer{font-size:.8rem;color:var(--muted);max-width:65ch}
     </form>
     <div class="status" id="status"></div>
     <div id="results"></div>
-    <footer><b>Offline copy.</b> Codes that mechanics add live in the online Fault Finder; tap + Add code to open it. Manual codes were copied by hand from the dealer's service manuals and smart cards. Codes marked <b>Added in field</b> come from mechanics and are not from a manual. The same number can mean different things on different machines or controllers, so check the machine before you act. Where a row says to verify, check the book or EST before replacing parts.</footer>
+    <footer>Manual codes were copied by hand from the dealer's service manuals and smart cards. Codes marked <b>Added in field</b> come from mechanics and are not from a manual. To remove a wrong one, the app owner deletes its row in the Google Sheet. The same number can mean different things on different machines or controllers, so check the machine before you act. Where a row says to verify, check the book or EST before replacing parts.</footer>
   </div>
 </main>
 <div class="toast" id="toast" role="status" hidden></div>
@@ -206,17 +206,13 @@ function rowHtml(r, hw){
       ${r[5]?`<div class="verify"><b>Verify:</b> ${esc(r[5])}</div>`:""}
     </div>`;
   }
-  const a=r.added, who=(names[a.owner]||"") || "a mechanic";
-  const mine = a.owner===myId, canDel = mine || isAdmin;
-  const confirming = pendingDel===a.owner+"/"+a.id;
+  const a=r.added;
+  const st = a.state==="queued" ? `<span class="tag" style="background:var(--warn-bg);color:var(--warn-ink)">Waiting for signal</span>`
+           : a.state==="sent" ? `<span class="tag" style="background:var(--warn-bg);color:var(--warn-ink)">Sent · showing for everyone soon</span>` : "";
   return `<div class="row">
     <div class="code">${esc(r[2])}</div>
     <div class="desc">${hl(r[3],hw)}</div>
-    <div class="meta"><span class="tag field">Added in field</span>${r[1]?`<span class="tag">${esc(r[1])}</span>`:""}${r[4]?`<span>${esc(r[4])}</span>`:""}<span>By ${esc(mine?"you":who)}${a.at?" · "+esc(fmtDate(a.at)):""}</span>
-      ${canDel?(confirming
-        ?`<span>Remove this code for everyone? <button type="button" class="link" data-del="${esc(a.owner)}" data-id="${esc(a.id)}">Yes, remove</button> · <button type="button" class="link" data-cancel="1" style="color:var(--muted)">Keep</button></span>`
-        :`<button type="button" class="link" data-ask="${esc(a.owner)}" data-id="${esc(a.id)}">Remove</button>`):""}
-    </div>
+    <div class="meta"><span class="tag field">Added in field</span>${st}${r[1]?`<span class="tag">${esc(r[1])}</span>`:""}${r[4]?`<span>${esc(r[4])}</span>`:""}<span>${a.by?"By "+esc(a.by):"By a mechanic"}${a.at?" · "+esc(a.at):""}</span></div>
     ${a.fix?`<div class="fix"><b>What fixed it:</b> ${esc(a.fix)}</div>`:""}
   </div>`;
 }
@@ -269,37 +265,98 @@ function run(){
   }
 }
 
-/* ---------- shared field-added codes ---------- */
-function rebuild(){
-  added=[];
-  Object.entries(docsByOwner).forEach(([owner, entries])=>{
-    (entries||[]).forEach(e=>{
-      if (!e || typeof e.code!=="string" || typeof e.desc!=="string") return;
-      const bi = Number.isInteger(e.book) && e.book>=0 && e.book<B.length ? e.book : OTHER;
-      const r = prep([bi, String(e.sys||"").slice(0,50), e.code.slice(0,30), e.desc.slice(0,300), String(e.model||"").slice(0,60), "", "", 0, ""]);
-      r.added = {owner, id:String(e.id||""), at:+e.at||0, fix:String(e.fix||"").slice(0,600)};
-      added.push(r);
-    });
-  });
-  R = BASE.concat(added);
-  const ids = Object.keys(docsByOwner);
-  if (user && ids.length){
-    user.profiles(ids).then(ps=>{ ids.forEach(id=>{ names[id]=(ps[id]&&ps[id].name)||""; }); run(); }).catch(()=>{});
+/* ---------- field-added codes via Google Form + published Sheet ---------- */
+const FORM_URL = "https://docs.google.com/forms/d/e/1FAIpQLScfk1LEjDTvNpfLGgkTrKUle0XofA5I9lES25s16gR_H79rSw/formResponse";
+const F = {book:"entry.1654474334", model:"entry.1010203340", code:"entry.2077684376", sys:"entry.273006471",
+           desc:"entry.49470124", fix:"entry.973767407", by:"entry.1130602159"};
+const CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSm-qDLucSMQ93XKJhVIrBFbnkjnyAe0olpvQykzg1hLY_lxITlAWNxoXR68PUTRMdNVawjX2844o5v/pub?gid=1032083197&single=true&output=csv";
+
+function lsGet(k, d){ try{ const v=localStorage.getItem(k); return v?JSON.parse(v):d; }catch(e){ return d; } }
+function lsSet(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
+
+let sheetRows = lsGet("ff-sheet", []);   // entries from the published sheet (cached for offline)
+let queue = lsGet("ff-queue", []);       // saved on this phone, not yet sent
+let sent = lsGet("ff-sent", []);         // sent, waiting to show up in the sheet
+
+function parseCSV(text){
+  const rows=[]; let row=[], f="", q=false;
+  for (let i=0;i<text.length;i++){
+    const c=text[i];
+    if (q){ if (c==='"'){ if (text[i+1]==='"'){ f+='"'; i++; } else q=false; } else f+=c; }
+    else if (c==='"') q=true;
+    else if (c===','){ row.push(f); f=""; }
+    else if (c==='\n'){ row.push(f); rows.push(row); row=[]; f=""; }
+    else if (c!=='\r') f+=c;
   }
+  if (f!=="" || row.length){ row.push(f); rows.push(row); }
+  return rows;
+}
+function bookIndex(name){
+  const n=String(name||"").trim().toLowerCase();
+  const i=B.findIndex(b=>b.n.toLowerCase()===n);
+  return i>=0 ? i : OTHER;
+}
+function fromSheet(text){
+  const rows=parseCSV(text); if (!rows.length) return [];
+  const h=rows[0].map(x=>x.trim().toLowerCase());
+  const col=(...names)=>{ for (const nm of names){ const i=h.findIndex(x=>x===nm); if(i>=0) return i; } for (const nm of names){ const i=h.findIndex(x=>x.includes(nm)); if(i>=0) return i; } return -1; };
+  const c={at:col("timestamp"), book:col("machine"), model:col("model"), code:col("fault code","code"), sys:col("system"),
+           desc:col("description"), fix:col("what fixed it","fixed"), by:col("added by")};
+  if (c.code<0 || c.desc<0) return [];
+  return rows.slice(1).map(r=>({
+    at:(c.at>=0?r[c.at]:"")||"", book:c.book>=0?r[c.book]:"", model:c.model>=0?r[c.model]:"", code:(r[c.code]||"").trim(),
+    sys:c.sys>=0?r[c.sys]:"", desc:(r[c.desc]||"").trim(), fix:c.fix>=0?r[c.fix]:"", by:c.by>=0?r[c.by]:""
+  })).filter(e=>e.code && e.desc);
+}
+const same=(a,b)=>norm(a.code)===norm(b.code) && a.desc.trim().toLowerCase()===b.desc.trim().toLowerCase();
+
+function rebuild(){
+  sent = sent.filter(s=>!sheetRows.some(e=>same(e,s)) && Date.now()-s.t < 3*864e5);
+  lsSet("ff-sent", sent);
+  const mk=(e, state)=>{
+    const r=prep([bookIndex(e.book), String(e.sys||"").slice(0,50), String(e.code).toUpperCase().slice(0,30), String(e.desc).slice(0,300), String(e.model||"").slice(0,60), "", "", 0, ""]);
+    r.added={by:String(e.by||"").slice(0,60), at:String(e.at||"").split(" ")[0], fix:String(e.fix||"").slice(0,600), state};
+    return r;
+  };
+  added = sheetRows.map(e=>mk(e,"live")).concat(sent.map(e=>mk(e,"sent")), queue.map(e=>mk(e,"queued")));
+  R = BASE.concat(added);
   drawBooks(); drawSystems(); run();
 }
 
-const CLAUDE_URL = "https://claude.ai/artifact/Jhr9KBRh4eJe7DyxqveJtL";
+async function refreshSheet(){
+  try{
+    const res = await fetch(CSV_URL + "&t=" + Date.now(), {cache:"no-store"});
+    if (!res.ok) return;
+    const rows = fromSheet(await res.text());
+    sheetRows = rows; lsSet("ff-sheet", rows); rebuild();
+  }catch(e){ /* offline: keep the cached copy */ }
+}
+
+let flushing=false;
+async function flushQueue(){
+  if (flushing || !queue.length) return;
+  flushing=true;
+  try{
+    while (queue.length){
+      const e=queue[0];
+      const body=new URLSearchParams();
+      Object.keys(F).forEach(k=>body.append(F[k], e[k]||""));
+      await fetch(FORM_URL, {method:"POST", mode:"no-cors", body});
+      queue.shift(); lsSet("ff-queue", queue);
+      sent.push(Object.assign({}, e, {t:Date.now()})); lsSet("ff-sent", sent);
+    }
+    toast("Sent. Everyone sees the new code within about 5 minutes.");
+  }catch(err){ /* no signal: try again later */ }
+  flushing=false; rebuild();
+  setTimeout(refreshSheet, 90000);
+}
+
 function openForm(code){
-  if (!window.claude){ toast("Adding codes happens in the online Fault Finder. Opening it now."); setTimeout(()=>{ window.location.href = CLAUDE_URL; }, 900); return; }
-  if (!db || canWrite===false){
-    toast(db ? "You need Contributor access to this page to add codes. Ask the page owner." : "Adding codes needs you to be signed in to the shared app.");
-    return;
-  }
   $("addform").hidden=false; $("formerr").hidden=true;
   $("f-book").value = String(book===-1 ? 1 : book);
   $("f-code").value = code || "";
   $("f-desc").value=""; $("f-fix").value=""; $("f-model").value=""; $("f-sys").value = sys || "";
+  $("f-by").value = lsGet("ff-name","") || "";
   fillSys();
   window.scrollTo({top:0});
   (code ? $("f-desc") : $("f-code")).focus();
@@ -311,78 +368,32 @@ function fillSys(){
 }
 function closeForm(){ $("addform").hidden=true; }
 
-function writeOwn(entries){
-  writing = writing.then(()=>db.doc("added/"+myId).set({entries, updated: Date.now()}));
-  return writing;
-}
-
-$("addform").addEventListener("submit", async ev=>{
+$("addform").addEventListener("submit", ev=>{
   ev.preventDefault();
-  const code=$("f-code").value.trim().toUpperCase(), desc=$("f-desc").value.trim();
+  const code=$("f-code").value.trim().toUpperCase(), desc=$("f-desc").value.trim(), by=$("f-by").value.trim();
   const err=$("formerr");
   if (!code || !desc){ err.textContent="Enter the fault code and what it means."; err.hidden=false; return; }
-  if (!myId){ err.textContent="Your sign-in did not come through, so the code can't be saved. Reopen the app and try again."; err.hidden=false; return; }
+  if (!by){ err.textContent="Enter your name so others know who to ask about this code."; err.hidden=false; return; }
   const bi=+$("f-book").value;
   const dup = R.find(r=>r[0]===bi && r.n===norm(code) && r[3].trim().toLowerCase()===desc.toLowerCase());
   if (dup){ err.textContent=`${code} with that description is already in ${B[bi].n}.`; err.hidden=false; return; }
-  const entry={id: Date.now().toString(36)+Math.random().toString(36).slice(2,7), book:bi, code, desc,
-    sys:$("f-sys").value.trim(), model:$("f-model").value.trim(), fix:$("f-fix").value.trim(), at:Date.now()};
-  const mine = (docsByOwner[myId]||[]).slice();
-  mine.push(entry);
-  $("saveBtn").disabled=true; err.hidden=true;
-  try{
-    await writeOwn(mine);
-    closeForm();
-    $("q").value=code; setBook(bi);
-    toast(`Saved. ${code} now shows for everyone.`);
-  }catch(e){
-    err.textContent = e && e.code==="invalid_argument" ? "You need Contributor access to this page to add codes. Ask the page owner."
-      : e && e.code==="quota_exceeded" ? "The shared store is full. Ask the page owner to clear out old entries."
-      : "Couldn't save just now. Check your signal and try again.";
-    err.hidden=false;
-    if (e && e.code==="invalid_argument"){ canWrite=false; $("openAdd").disabled=true; }
-  }finally{ $("saveBtn").disabled=false; }
+  lsSet("ff-name", by);
+  queue.push({book:B[bi].n, model:$("f-model").value.trim(), code, sys:$("f-sys").value.trim(), desc, fix:$("f-fix").value.trim(), by, at:""});
+  lsSet("ff-queue", queue);
+  closeForm();
+  $("q").value=code; setBook(bi);
+  if (navigator.onLine===false) toast("Saved on this phone. It sends when you have signal.");
+  rebuild(); flushQueue();
 });
 $("cancelAdd").onclick=closeForm;
 $("openAdd").onclick=()=>openForm(/\d/.test($("q").value)?$("q").value.trim().toUpperCase():"");
 $("f-book").onchange=fillSys;
 
-$("results").addEventListener("click", async ev=>{
-  const t=ev.target;
-  if (t.dataset.ask){ pendingDel=t.dataset.ask+"/"+t.dataset.id; run(); return; }
-  if (t.dataset.cancel){ pendingDel=null; run(); return; }
-  if (t.dataset.del){
-    const owner=t.dataset.del, id=t.dataset.id;
-    const left=(docsByOwner[owner]||[]).filter(e=>e.id!==id);
-    pendingDel=null;
-    try{
-      writing = writing.then(()=>db.doc("added/"+owner).set({entries:left, updated:Date.now()}));
-      await writing;
-      toast("Code removed.");
-    }catch(e){ toast("Couldn't remove it. You can only remove codes you added."); run(); }
-  }
-});
-
 $("q").addEventListener("input", ()=>{ limit=120; run(); });
 $("clear").onclick=()=>{ $("q").value=""; limit=120; run(); $("q").focus(); };
 $("f-book").innerHTML = B.map((b,i)=>`<option value="${i}">${esc(b.n)}</option>`).join("");
-drawBooks(); drawSystems(); run();
-
-(async ()=>{
-  if (!window.claude || !window.claude.use) return;
-  [db, user] = await Promise.all([window.claude.use("db"), window.claude.use("user")]);
-  if (user){
-    myId = await user.id();
-    isAdmin = await user.canEdit();
-    canWrite = await user.can("data.write");
-  }
-  if (!db){ $("openAdd").disabled=true; return; }
-  if (canWrite===false && !isAdmin){ $("openAdd").title="You need Contributor access to add codes"; }
-  db.collection("added").onSnapshot(snap=>{
-    const next={};
-    snap.docs.forEach(d=>{ const v=d.data(); if (v && Array.isArray(v.entries)) next[d.id]=v.entries; });
-    docsByOwner=next; rebuild();
-  }, ()=>{});
-})();
+window.addEventListener("online", ()=>{ flushQueue(); refreshSheet(); });
+document.addEventListener("visibilitychange", ()=>{ if (document.visibilityState==="visible"){ flushQueue(); refreshSheet(); } });
+rebuild(); flushQueue(); refreshSheet();
 </script>
 <script>if("serviceWorker" in navigator){addEventListener("load",()=>navigator.serviceWorker.register("sw.js").catch(()=>{}));}</script></body></html>
